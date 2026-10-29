@@ -13,7 +13,7 @@ Mọi kết nối thiết bị và script đều chạy trên máy tính của b
 
 - Nhận nhiều iPhone qua USB và chuyển thiết bị từ thanh trên cùng.
 - Xem stream màn hình; nhấp, vuốt và nhấp chuột phải để về Home.
-- Lua-like editor với tô màu, autocomplete trực tiếp và custom helper snippets.
+- Full Lua editor với biến, hàm, bảng, `if`, vòng lặp, `pcall`, autocomplete và templates.
 - OCR toàn màn hình/vùng, tìm chữ, nhấn theo chữ và đọc màu pixel.
 - Mở, tắt hoặc xóa dữ liệu app người dùng theo bundle ID.
 - Clipboard, screenshot, file sandbox, JSON, HTTP GET/POST và Output co giãn.
@@ -54,20 +54,27 @@ theo giấy phép MIT; bản quyền tác giả gốc được giữ nguyên tro
 ## API script tiêu biểu
 
 ```lua
-tap(187, 333)
-swipe(187, 560, 187, 220, 0.5)
-inputText("Hello")
-ocr({region = {0, 0, 375, 300}})
-tapText("Continue", 5)
-getColor(187, 333)
-appRun("com.apple.Preferences")
-screenshot("screen")
-log("Completed")
+local function openSettings()
+  appRun("com.apple.Preferences")
+  return waitUntil(8, 0.5, function()
+    return findText("General")
+  end)
+end
+
+retry(3, 1, function(attempt)
+  log("Attempt", attempt, device.name)
+  assertTrue(openSettings(), "Settings did not open")
+end)
+
+local status, body = http.get("https://example.com", nil, 15)
+writeFile("result.json", json.encode({status = status, body = body}))
+toast("Completed")
 ```
 
-File do script đọc/ghi được giới hạn trong `scripts/data`. Runtime hiện chạy
-các lệnh API theo từng dòng; đây không phải Lua VM đầy đủ và không hỗ trợ module
-tweak tùy ý hoặc tự động hóa nhiều container/tài khoản.
+Lua runtime được sandbox với giới hạn bộ nhớ và số lệnh. `os`, `io`, `package`,
+`require`, `load`, Python builtins và truy cập thuộc tính Python đều bị chặn.
+File do script đọc/ghi được giới hạn trong `scripts/data`; `include()` chỉ đọc
+file `.lua` trong `scripts`. Nút Stop có thể dừng vòng lặp và các hàm chờ.
 
 ## Cấu trúc
 

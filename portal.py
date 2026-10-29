@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import importlib.util
 import io
 import json
 import queue
@@ -13,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -89,6 +91,8 @@ class DeviceSession:
         self.desired_connected = False
         self.reconnect_thread: threading.Thread | None = None
         self.consumer = threading.Thread(target=self._consume, daemon=True)
+        self.script_lock = threading.Lock()
+        self.script_cancel = threading.Event()
         self.consumer.start()
 
     def _consume(self) -> None:
@@ -273,7 +277,12 @@ def index():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "pid": __import__("os").getpid()}
+    return {
+        "ok": True,
+        "pid": __import__("os").getpid(),
+        "lua": importlib.util.find_spec("lupa") is not None,
+        "runtime": "Lua 5.x sandbox",
+    }
 
 
 @app.get("/api/devices")
@@ -826,7 +835,470 @@ def http_request(method: str, value: str, payload=None, headers=None, timeout: f
         return int(exc.code), raw.decode("utf-8", errors="replace")
 
 
-def run_script(session: DeviceSession, code: str) -> None:
+def _deny_lua_attribute_access(_obj, attr_name, _is_setting):
+    raise AttributeError(f"Python attribute access is blocked in Lua: {attr_name}")
+
+
+class LuaAutomationRuntime:
+    """A bounded Lua runtime that exposes only the IOSTouch automation API."""
+
+    MAX_SOURCE_BYTES = 512_000
+    MAX_MEMORY_BYTES = 64 * 1024 * 1024
+    MAX_INCLUDE_DEPTH = 10
+
+    def __init__(self, session: DeviceSession):
+        try:
+            from lupa import LuaError, LuaRuntime
+        except ImportError as exc:
+            raise RuntimeError(
+                "Thiếu Lua runtime. Hãy chạy lại start.cmd để cài dependency lupa."
+            ) from exc
+
+        self.session = session
+        self.lua_error = LuaError
+        self.include_stack: list[Path] = []
+        self.lua = LuaRuntime(
+            unpack_returned_tuples=True,
+            register_eval=False,
+            register_builtins=False,
+            attribute_filter=_deny_lua_attribute_access,
+            max_memory=self.MAX_MEMORY_BYTES,
+        )
+        self.globals = self.lua.globals()
+        self._install_api()
+        self.lua.execute(
+            """
+            local __steps = 0
+            local __isCancelled = __cancelled
+            debug.sethook(function()
+              __steps = __steps + 1
+              if __steps > 2500 then
+                error("script exceeded the instruction limit", 2)
+              end
+              if __isCancelled() then
+                error("script stopped by user", 2)
+              end
+            end, "", 10000)
+
+            function waitUntil(timeout, interval, predicate)
+              timeout = tonumber(timeout) or 10
+              interval = tonumber(interval) or 0.25
+              local deadline = monotonic() + math.max(0, timeout)
+              repeat
+                local ok, value = pcall(predicate)
+                if ok and value then return value end
+                sleep(interval)
+              until monotonic() >= deadline
+              return nil
+            end
+
+            function retry(times, delay, callback)
+              times = math.max(1, math.floor(tonumber(times) or 1))
+              delay = tonumber(delay) or 0.25
+              local lastError = "retry failed"
+              for attempt = 1, times do
+                local ok, value = pcall(callback, attempt)
+                if ok then return value end
+                lastError = value
+                if attempt < times then sleep(delay) end
+              end
+              error(lastError, 2)
+            end
+
+            function assertTrue(value, message)
+              if not value then error(message or "assertTrue failed", 2) end
+              return value
+            end
+
+            function assertEqual(actual, expected, message)
+              if actual ~= expected then
+                error(message or ("expected " .. tostring(expected) .. ", got " .. tostring(actual)), 2)
+              end
+              return actual
+            end
+
+            print = log
+            __cancelled = nil
+            python = nil
+            os = nil
+            io = nil
+            package = nil
+            require = nil
+            dofile = nil
+            loadfile = nil
+            load = nil
+            loadstring = nil
+            collectgarbage = nil
+            debug = nil
+            """
+        )
+
+    def _install_api(self) -> None:
+        api = {
+            "tap": self.tap,
+            "safeTap": self.tap,
+            "doubleTap": self.double_tap,
+            "longPress": self.long_press,
+            "swipe": self.swipe,
+            "inputText": self.input_text,
+            "inputtext": self.input_text,
+            "copyText": self.copy_text,
+            "setClipboardText": self.copy_text,
+            "writePasteboard": self.copy_text,
+            "setClipboard": self.copy_text,
+            "readFile": self.read_file,
+            "writeFile": self.write_file,
+            "appendFile": self.append_file,
+            "jsonEncode": self.json_encode,
+            "jsonDecode": self.json_decode,
+            "sleep": self.sleep,
+            "home": lambda: self._action(1),
+            "pressHome": lambda: self._action(1),
+            "lock": lambda: self._action(2),
+            "rotate": lambda: self._action(3),
+            "appSwitcher": lambda: self._action(4),
+            "back": lambda: self._action(8),
+            "log": self.log,
+            "toast": self.toast,
+            "appRun": self.app_run,
+            "openApp": self.app_run,
+            "appKill": self.app_kill,
+            "appClear": self.app_clear,
+            "appclear": self.app_clear,
+            "openUrl": self.open_url,
+            "openURL": self.open_url,
+            "openurl": self.open_url,
+            "getSN": self.get_sn,
+            "getsn": self.get_sn,
+            "httpGet": self.http_get,
+            "httpget": self.http_get,
+            "httpPost": self.http_post,
+            "httppost": self.http_post,
+            "getScreenResolution": self.get_screen_resolution,
+            "getColor": self.get_color,
+            "waitForColor": self.wait_for_color,
+            "ocr": self.ocr,
+            "findText": self.find_text,
+            "waitForText": self.wait_for_text,
+            "tapText": self.tap_text,
+            "screenshot": self.screenshot,
+            "include": self.include,
+            "now": lambda: int(time.time()),
+            "monotonic": time.monotonic,
+            "uuid": lambda: str(uuid.uuid4()),
+            "__cancelled": self.session.script_cancel.is_set,
+        }
+        for name, callback in api.items():
+            self.globals[name] = callback
+
+        json_api = self.lua.table()
+        json_api["encode"] = self.json_encode
+        json_api["decode"] = self.json_decode
+        self.globals["json"] = json_api
+
+        http_api = self.lua.table()
+        http_api["get"] = self.http_get
+        http_api["post"] = self.http_post
+        self.globals["http"] = http_api
+
+        self.globals["device"] = self._to_lua(
+            {
+                "name": self.session.device.name,
+                "udid": self.session.device.udid,
+                "model": self.session.device.model,
+                "ios": self.session.device.ios,
+            }
+        )
+        self.globals["SCREEN_WIDTH"] = 375
+        self.globals["SCREEN_HEIGHT"] = 667
+
+    def _check_cancelled(self) -> None:
+        if self.session.script_cancel.is_set():
+            raise RuntimeError("Script stopped by user")
+
+    def _plain(self, value, depth: int = 0):
+        if depth > 20:
+            raise ValueError("Lua table nested too deeply")
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        module = type(value).__module__
+        if module.startswith("lupa.") and hasattr(value, "items"):
+            items = [(self._plain(k, depth + 1), self._plain(v, depth + 1)) for k, v in value.items()]
+            integer_keys = [int(k) for k, _ in items if isinstance(k, (int, float)) and float(k).is_integer()]
+            if len(integer_keys) == len(items) and sorted(integer_keys) == list(range(1, len(items) + 1)):
+                by_key = {int(key): item for key, item in items}
+                return [by_key[index] for index in range(1, len(items) + 1)]
+            return {key: item for key, item in items}
+        if isinstance(value, dict):
+            return {self._plain(k, depth + 1): self._plain(v, depth + 1) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._plain(item, depth + 1) for item in value]
+        return str(value)
+
+    def _to_lua(self, value, depth: int = 0):
+        if depth > 20:
+            raise ValueError("Data nested too deeply")
+        if isinstance(value, dict):
+            table = self.lua.table()
+            for key, item in value.items():
+                table[key] = self._to_lua(item, depth + 1)
+            return table
+        if isinstance(value, (list, tuple)):
+            table = self.lua.table()
+            for index, item in enumerate(value, 1):
+                table[index] = self._to_lua(item, depth + 1)
+            return table
+        return value
+
+    def _format(self, value) -> str:
+        value = self._plain(value)
+        if value is None:
+            return "nil"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return str(value)
+
+    def tap(self, x, y):
+        self._check_cancelled()
+        self.session.connection.tap(float(x) / 375, float(y) / 667)
+        return True
+
+    def double_tap(self, x, y):
+        self.tap(x, y)
+        self.sleep(0.12)
+        self.tap(x, y)
+        return True
+
+    def long_press(self, x, y, duration=0.8):
+        self._check_cancelled()
+        self.session.connection.long_press(float(x) / 375, float(y) / 667, float(duration))
+        return True
+
+    def swipe(self, x1, y1, x2, y2, duration=0.4):
+        self._check_cancelled()
+        self.session.connection.swipe(
+            float(x1) / 375,
+            float(y1) / 667,
+            float(x2) / 375,
+            float(y2) / 667,
+            max(0.05, min(float(duration), 10.0)),
+        )
+        return True
+
+    def input_text(self, value):
+        self._check_cancelled()
+        self.session.connection.type_text(str(value))
+        return True
+
+    def copy_text(self, value):
+        self._check_cancelled()
+        self.session.connection.copy_text(str(value))
+        return True
+
+    def read_file(self, name):
+        content = read_runtime_file(str(name))
+        manager.log("script", f"readFile({name}): {content[:65_536]}", self.session.device.name)
+        return content
+
+    def _write_file(self, name, value, *, append: bool):
+        path = write_runtime_file(str(name), self._plain(value), append=append)
+        relative = path.relative_to(RUNTIME_FILES).as_posix()
+        manager.log("success", f"File saved: scripts/data/{relative}", self.session.device.name)
+        return relative
+
+    def write_file(self, name, value):
+        return self._write_file(name, value, append=False)
+
+    def append_file(self, name, value):
+        return self._write_file(name, value, append=True)
+
+    def json_encode(self, value):
+        encoded = json.dumps(self._plain(value), ensure_ascii=False, separators=(",", ":"))
+        manager.log("script", f"JSON: {encoded}", self.session.device.name)
+        return encoded
+
+    def json_decode(self, value):
+        decoded = json.loads(str(value))
+        return self._to_lua(decoded)
+
+    def sleep(self, seconds):
+        remaining = max(0.0, min(float(seconds), 300.0))
+        while remaining > 0:
+            self._check_cancelled()
+            chunk = min(0.05, remaining)
+            time.sleep(chunk)
+            remaining -= chunk
+        return True
+
+    def _action(self, action: int):
+        self._check_cancelled()
+        self.session.connection.system_action(action)
+        return True
+
+    def log(self, *values):
+        manager.log("script", " ".join(self._format(value) for value in values), self.session.device.name)
+        return True
+
+    def toast(self, *values):
+        manager.log("toast", " ".join(self._format(value) for value in values), self.session.device.name)
+        return True
+
+    def app_run(self, bundle_id):
+        return launch_app(self.session, str(bundle_id))
+
+    def app_kill(self, bundle_id):
+        kill_app(self.session, str(bundle_id))
+        return True
+
+    def app_clear(self, bundle_id):
+        clear_app(self.session, str(bundle_id))
+        return True
+
+    def open_url(self, value):
+        open_url(self.session, str(value))
+        return True
+
+    def get_sn(self):
+        serial = get_serial_number(self.session)
+        manager.log("script", f"Serial Number: {serial}", self.session.device.name)
+        return serial
+
+    def http_get(self, value, headers=None, timeout=15):
+        if isinstance(headers, (int, float)):
+            timeout, headers = headers, None
+        status, response = http_request(
+            "GET", str(value), headers=self._plain(headers) if headers is not None else None, timeout=timeout
+        )
+        manager.log("script", f"HTTP GET {status}: {response}", self.session.device.name)
+        return status, response
+
+    def http_post(self, value, payload="", headers=None, timeout=15):
+        if isinstance(headers, (int, float)):
+            timeout, headers = headers, None
+        status, response = http_request(
+            "POST",
+            str(value),
+            self._plain(payload),
+            self._plain(headers) if headers is not None else None,
+            timeout,
+        )
+        manager.log("script", f"HTTP POST {status}: {response}", self.session.device.name)
+        return status, response
+
+    def get_screen_resolution(self):
+        result = {"width": 375, "height": 667}
+        manager.log("script", "Screen: 375x667 points", self.session.device.name)
+        return self._to_lua(result)
+
+    def get_color(self, x, y):
+        color = pixel_color(self.session, float(x), float(y))
+        manager.log("script", f"Color: 0x{color:06X}", self.session.device.name)
+        return color
+
+    def wait_for_color(self, x, y, expected, timeout=10, tolerance=12):
+        deadline = time.monotonic() + max(0, float(timeout))
+        expected = int(expected)
+        while True:
+            self._check_cancelled()
+            actual = pixel_color(self.session, float(x), float(y))
+            if color_near(actual, expected, int(tolerance)):
+                manager.log("script", f"Color matched: 0x{actual:06X}", self.session.device.name)
+                return actual
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"waitForColor timeout; last=0x{actual:06X}")
+            self.sleep(0.2)
+
+    def ocr(self, options=None):
+        region = None
+        if options is not None:
+            options = self._plain(options)
+            if isinstance(options, dict):
+                region = options.get("region")
+            elif isinstance(options, list):
+                region = options
+            else:
+                raise ValueError("ocr nhận {region={x,y,w,h}} hoặc {x,y,w,h}")
+        found = manager.run_ocr(self.session, region)
+        manager.log("script", f"OCR: {len(found)} regions", self.session.device.name)
+        return self._to_lua(found)
+
+    def _find_text(self, target, timeout=0):
+        deadline = time.monotonic() + max(0, float(timeout))
+        while True:
+            self._check_cancelled()
+            found = next(
+                (
+                    item
+                    for item in manager.run_ocr(self.session)
+                    if str(target).casefold() in item["text"].casefold()
+                ),
+                None,
+            )
+            if found or time.monotonic() >= deadline:
+                return found
+            self.sleep(0.35)
+
+    def find_text(self, target, timeout=0):
+        found = self._find_text(target, timeout)
+        if not found:
+            return None
+        return self._to_lua(found)
+
+    def wait_for_text(self, target, timeout=10):
+        found = self._find_text(target, timeout)
+        if not found:
+            raise TimeoutError(f"Text not found: {target}")
+        return self._to_lua(found)
+
+    def tap_text(self, target, timeout=10):
+        found = self._find_text(target, timeout)
+        if not found:
+            raise TimeoutError(f"Text not found: {target}")
+        x = found["x"] + found["width"] / 2
+        y = found["y"] + found["height"] / 2
+        self.session.connection.tap(x, y)
+        return self._to_lua(found)
+
+    def screenshot(self, *args):
+        name = str(args[0]) if args else time.strftime("screenshot_%Y%m%d_%H%M%S")
+        region = None
+        if len(args) == 2:
+            region = self._plain(args[1])
+        elif len(args) == 5:
+            region = [self._plain(value) for value in args[1:5]]
+        elif len(args) not in (0, 1):
+            raise ValueError("screenshot(name), screenshot(name, region) hoặc screenshot(name,x,y,w,h)")
+        return str(save_screenshot(self.session, name, region))
+
+    def include(self, name):
+        relative = Path(str(name).replace("\\", "/"))
+        if relative.suffix.lower() != ".lua" or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("include chỉ nhận file .lua bên trong thư mục scripts")
+        root = SCRIPTS.resolve()
+        path = (root / relative).resolve()
+        if root not in path.parents or not path.is_file():
+            raise FileNotFoundError(f"Không tìm thấy script: {relative}")
+        if path in self.include_stack:
+            raise RuntimeError(f"Circular include: {relative}")
+        if len(self.include_stack) >= self.MAX_INCLUDE_DEPTH:
+            raise RuntimeError("include nested too deeply")
+        if path.stat().st_size > self.MAX_SOURCE_BYTES:
+            raise ValueError("Included script exceeds 512 KB")
+        self.include_stack.append(path)
+        try:
+            return self.lua.execute(path.read_text(encoding="utf-8-sig"))
+        finally:
+            self.include_stack.pop()
+
+    def run(self, code: str) -> None:
+        if len(code.encode("utf-8")) > self.MAX_SOURCE_BYTES:
+            raise ValueError("Script exceeds 512 KB")
+        self.lua.execute(code)
+
+
+def run_legacy_script(session: DeviceSession, code: str) -> None:
     manager.log("info", "Script started", session.device.name)
     for line_number, source in enumerate(code.splitlines(), 1):
         line = source.split("--", 1)[0].strip().rstrip(";")
@@ -965,6 +1437,26 @@ def run_script(session: DeviceSession, code: str) -> None:
     manager.log("success", "Script completed", session.device.name)
 
 
+def run_script(session: DeviceSession, code: str) -> None:
+    if not session.script_lock.acquire(blocking=False):
+        raise RuntimeError("Một script khác đang chạy trên thiết bị này")
+    session.script_cancel.clear()
+    runtime: LuaAutomationRuntime | None = None
+    manager.log("info", "Lua script started", session.device.name)
+    try:
+        runtime = LuaAutomationRuntime(session)
+        runtime.run(code)
+        manager.log("success", "Lua script completed", session.device.name)
+    except Exception as exc:
+        if runtime is not None and isinstance(exc, runtime.lua_error):
+            message = str(exc).replace("[string \"<python>\"]", "script")
+            raise ValueError(f"Lua error: {message}") from exc
+        raise
+    finally:
+        session.script_cancel.clear()
+        session.script_lock.release()
+
+
 @app.post("/api/devices/{udid}/script")
 async def execute_script(udid: str, body: ScriptBody):
     session = require_connected(udid)
@@ -974,6 +1466,16 @@ async def execute_script(udid: str, body: ScriptBody):
         manager.log("error", str(exc), session.device.name)
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
+
+
+@app.post("/api/devices/{udid}/script/stop")
+def stop_script(udid: str):
+    session = manager.get(udid)
+    running = session.script_lock.locked()
+    session.script_cancel.set()
+    if running:
+        manager.log("warning", "Stopping Lua script...", session.device.name)
+    return {"ok": True, "running": running}
 
 
 @app.on_event("shutdown")

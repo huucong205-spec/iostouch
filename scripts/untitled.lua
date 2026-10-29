@@ -1,5 +1,9 @@
--- IOSTouch IDE
-log("Hello")
+-- IOSTouch Full Lua
+log("Device:", device.name, device.ios)
+
+for step = 1, 3 do
+  log("Step", step)
+  sleep(0.2)
+end
+
 appRun("com.apple.Preferences")
-sleep(1)
-tap(187, 333)

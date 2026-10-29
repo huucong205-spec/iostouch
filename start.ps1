@@ -43,7 +43,7 @@ if (-not $pythonCommand) {
     exit 1
 }
 
-& $pythonCommand.Source -c "import pymobiledevice3, fastapi, rapidocr" 2>$null
+& $pythonCommand.Source -c "import pymobiledevice3, fastapi, rapidocr, lupa" 2>$null
 if ($LASTEXITCODE -ne 0) {
     & $pythonCommand.Source -m pip install -r (Join-Path $ToolDir "requirements.txt")
 }
