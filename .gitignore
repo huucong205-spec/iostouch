@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+venv/
+build/
+dist/
+.headless-profile/
+screenshots/*.png
+scripts/data/*
+!scripts/data/.gitkeep
+.DS_Store
+Thumbs.db
+
