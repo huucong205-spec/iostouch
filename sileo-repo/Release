@@ -1,0 +1,18 @@
+Origin: IOSTouch
+Label: IOSTouch
+Suite: stable
+Version: 1.0
+Codename: iostouch
+Architectures: iphoneos-arm iphoneos-arm64
+Components: main
+Description: IOSTouch USB agent repository for jailbroken iPhone devices.
+MD5Sum:
+ 674b7ae026e38e594f3d74f344d79747 1874 Packages
+ 2e5d908227a812a70f964516e9590241 815 Packages.gz
+ 95ae879f0b035ecf88ec344db9d58930 970 Packages.bz2
+ caafac82ffd805a143ad228d8f835a92 872 Packages.xz
+SHA256:
+ e5ef1582af1cc564559d3dfba77354d77e935ea56511a3592b30e616ac4c61b0 1874 Packages
+ dd969f61453cdc188bcfe7233dddd407d81d18ce8e05791e23574e71f87499bc 815 Packages.gz
+ 6ba28f236d6f5cf3f17928ce1c013cf08e4ae037b035e9f0287e1a1a4cd41dcb 970 Packages.bz2
+ 0f9d45fb67566da4c8a5a9222b8b22b86121dbd4200a4eeabeafdedd1ec111f9 872 Packages.xz

@@ -39,6 +39,18 @@ Hoặc chạy launcher PowerShell:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
+## Cài agent trên iPhone
+
+Trong Sileo hoặc Zebra, thêm nguồn IOSTouch:
+
+```text
+https://huucong205-spec.github.io/iostouch/
+```
+
+Sau đó cài `IOSTouch Agent (ioscpy)` và respring. Gói agent được phân phối lại
+từ dự án mã nguồn mở [`lautarovculic/ioscpy`](https://github.com/lautarovculic/ioscpy)
+theo giấy phép MIT; bản quyền tác giả gốc được giữ nguyên trong kho Sileo.
+
 ## API script tiêu biểu
 
 ```lua

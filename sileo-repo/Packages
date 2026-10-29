@@ -1,0 +1,38 @@
+Package: com.ioscpy.device
+Version: 0.1.5
+Architecture: iphoneos-arm64
+Maintainer: IOSTouch <huucong205-spec@users.noreply.github.com>
+Installed-Size: 584
+Depends: ellekit | mobilesubstrate, firmware (>= 14.0)
+Filename: debs/com.ioscpy.device_0.1.5_iphoneos-arm64.deb
+Size: 49704
+MD5sum: 9f4483d083558d43a62ec9d39f5404b6
+SHA1: 2bfa75fad29db5c7209cbd6860a7c16c2656f0a1
+SHA256: f7e93ca87736ddfbc763f26f597a1d31e88dba18e7d1153d867b2276b1dbd199
+SHA512: 7b3dc52d9ac73f81c3b467da2f4f3200ec3c2b6c9df5a526c3c2e006327fdb0345fbf28a4e19a90a3a24fb657e01c34ffb2baa7bb35fd2b30876764a9e4ecf07
+Section: System
+Homepage: https://github.com/huucong205-spec/iostouch
+Description: USB screen and control agent required by IOSTouch. Based on the MIT-licensed ioscpy project by Lautaro Villarreal Culic'.
+Author: Lautaro Villarreal Culic' <lautaro@lautarovculic.com>
+Name: IOSTouch Agent (ioscpy)
+Icon: https://huucong205-spec.github.io/iostouch/CydiaIcon.png
+
+Package: com.ioscpy.device
+Version: 0.1.5
+Architecture: iphoneos-arm
+Maintainer: IOSTouch <huucong205-spec@users.noreply.github.com>
+Installed-Size: 584
+Depends: ellekit | mobilesubstrate, firmware (>= 14.0)
+Filename: debs/com.ioscpy.device_0.1.5_iphoneos-arm.deb
+Size: 49522
+MD5sum: ef5cf6d7880f21219718680fd02cbcd9
+SHA1: da0d322a18fd1bdf879bb165ad37dbbd24d5ceca
+SHA256: ed3cc1ebf1e93087669a04f6e6eb234800e8e9b0010cb78344d111cdc2f0d8c8
+SHA512: 04838b553f2e0616942c99a5d8525ccbd639c74d43ce28ff6bb3347cd39c20eb7d77f46d701d8e6ed574b11eb469b6bf0858c7514ad289ffc8635044c0b7b01d
+Section: System
+Homepage: https://github.com/huucong205-spec/iostouch
+Description: USB screen and control agent required by IOSTouch. Based on the MIT-licensed ioscpy project by Lautaro Villarreal Culic'.
+Author: Lautaro Villarreal Culic' <lautaro@lautarovculic.com>
+Name: IOSTouch Agent (ioscpy)
+Icon: https://huucong205-spec.github.io/iostouch/CydiaIcon.png
+
